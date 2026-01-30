@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { parseCSV, exportToCSV } from './utils/csvHelper';
 import { 
   INITIAL_CSV_DATA, 
@@ -9,9 +9,14 @@ import {
   OPTIONS_URUSAN_MANUAL, 
   OPTIONS_STATUS_URUSAN 
 } from './constants';
-import { StaffData, CSV_HEADERS, HEADER_KEY_MAP } from './types';
+import { StaffData } from './types';
 import { Input } from './components/Input';
-import { Search, Save, User, LogOut, Download, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { fetchGoogleSheetData, saveToGoogleSheet } from './utils/api';
+import { Search, Save, User, LogOut, Download, AlertCircle, CheckCircle2, Database, Loader2, X } from 'lucide-react';
+
+const SHEET_URL_KEY = 'sk_sri_aman_sheet_url';
+// URL Apps Script anda
+const DEFAULT_SHEET_URL = 'https://script.google.com/macros/s/AKfycbwUEynctnLs0FtwcCSYqfSIyDbHONbFaqJYXbBD5CYwf_7jsxUheQr8O7yAjAKDDZOpyA/exec';
 
 const App: React.FC = () => {
   const [allStaff, setAllStaff] = useState<StaffData[]>([]);
@@ -19,28 +24,70 @@ const App: React.FC = () => {
   const [icInput, setIcInput] = useState('');
   const [loginError, setLoginError] = useState('');
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
-  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  
+  // Sheet Configuration State
+  const [sheetUrl, setSheetUrl] = useState('');
+  const [isConfigOpen, setIsConfigOpen] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [connectionError, setConnectionError] = useState('');
+  const [isConnected, setIsConnected] = useState(false);
 
-  // Initialize Data
+  // Initialize: Load Sheet URL config and Initial Data
   useEffect(() => {
-    // In a real app, this might fetch from an API
-    // Here we load from the constant, simulating the spreadsheet
-    const data = parseCSV(INITIAL_CSV_DATA);
-    setAllStaff(data);
+    // 1. Muat data awal (sebagai backup pantas)
+    setAllStaff(parseCSV(INITIAL_CSV_DATA));
+
+    // 2. Tentukan URL (Local storage atau Default)
+    const storedUrl = localStorage.getItem(SHEET_URL_KEY);
+    const targetUrl = storedUrl || DEFAULT_SHEET_URL;
+
+    setSheetUrl(targetUrl);
+
+    // 3. Sambung terus ke Google Sheet
+    if (targetUrl) {
+      loadSheetData(targetUrl);
+    }
   }, []);
+
+  const loadSheetData = async (url: string) => {
+    setIsConnecting(true);
+    setConnectionError('');
+    try {
+      const data = await fetchGoogleSheetData(url);
+      if (data && data.length > 0) {
+        setAllStaff(data);
+        setIsConnected(true);
+      } else {
+        throw new Error("Data kosong.");
+      }
+    } catch (err) {
+      console.error(err);
+      setConnectionError('Gagal menyambung ke Google Sheet. Sila semak sambungan internet.');
+      setIsConnected(false);
+    } finally {
+      setIsConnecting(false);
+    }
+  };
+
+  const handleSaveConfig = () => {
+    if (!sheetUrl) return;
+    localStorage.setItem(SHEET_URL_KEY, sheetUrl);
+    loadSheetData(sheetUrl);
+    setIsConfigOpen(false);
+  };
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    const normalizedInput = icInput.replace(/[^0-9]/g, ''); // strip hyphens for loose check if needed, but currently checking exact match or flexible
+    const normalizedInput = icInput.replace(/[^0-9]/g, ''); 
     
-    // Find user by IC (allow with or without dashes if user types differently, though CSV has dashes)
     const found = allStaff.find(s => {
       const dbIc = s.NO_KAD_PENGENALAN?.replace(/[^0-9]/g, '');
       return dbIc === normalizedInput;
     });
 
     if (found) {
-      setCurrentUser(found);
+      setCurrentUser({ ...found });
       setLoginError('');
       setIcInput('');
     } else {
@@ -66,19 +113,33 @@ const App: React.FC = () => {
     setSaveStatus('idle');
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!currentUser) return;
     setSaveStatus('saving');
-    
-    // Simulate API delay
-    setTimeout(() => {
+
+    if (isConnected && sheetUrl) {
+      // 1. Save to Google Sheet
+      const success = await saveToGoogleSheet(sheetUrl, currentUser);
+      
+      if (success) {
+        // Update local state to reflect change
+        setAllStaff(prev => prev.map(s => s.BIL === currentUser.BIL ? currentUser : s));
+        setHasUnsavedChanges(false);
+        setSaveStatus('saved');
+        setTimeout(() => setSaveStatus('idle'), 3000);
+      } else {
+        setSaveStatus('error');
+        alert("Gagal menyimpan ke Google Sheet. Sila semak sambungan internet atau tetapan skrip.");
+      }
+    } else {
+      // 2. Fallback: Cannot save permanently
+      setSaveStatus('idle');
+      alert("AMARAN: Data TIDAK disimpan ke pangkalan data kerana tiada sambungan Google Sheet. Sila 'Download CSV' untuk simpanan manual, atau setkan Google Sheet URL.");
+      
+      // We still update local memory so they can download the CSV
       setAllStaff(prev => prev.map(s => s.BIL === currentUser.BIL ? currentUser : s));
       setHasUnsavedChanges(false);
-      setSaveStatus('saved');
-      
-      // Reset saved status message after 3 seconds
-      setTimeout(() => setSaveStatus('idle'), 3000);
-    }, 600);
+    }
   };
 
   const handleDownloadCSV = () => {
@@ -94,16 +155,43 @@ const App: React.FC = () => {
     document.body.removeChild(link);
   };
 
+  const handleDisconnect = () => {
+      if(window.confirm("Putuskan sambungan dari Google Sheet? Data akan kembali kepada asal.")) {
+          localStorage.removeItem(SHEET_URL_KEY);
+          setSheetUrl('');
+          setIsConnected(false);
+          setAllStaff(parseCSV(INITIAL_CSV_DATA));
+          setIsConfigOpen(false);
+      }
+  }
+
+  // --- RENDER HELPERS ---
+
   if (!currentUser) {
     return (
-      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
-        <div className="bg-white max-w-md w-full rounded-xl shadow-lg p-8 border border-slate-200">
+      <div className="min-h-screen bg-slate-100 flex flex-col items-center justify-center p-4 relative">
+        {/* Config Button (Login Screen) */}
+        <button 
+            onClick={() => setIsConfigOpen(true)}
+            className="absolute top-4 right-4 p-2 text-slate-500 hover:text-blue-600 hover:bg-slate-200 rounded-full transition-colors"
+            title="Tetapan Database"
+        >
+            <Database className="w-6 h-6" />
+        </button>
+
+        <div className="bg-white max-w-md w-full rounded-xl shadow-lg p-8 border border-slate-200 relative">
           <div className="text-center mb-8">
-            <div className="bg-blue-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
-              <User className="w-8 h-8 text-blue-600" />
+            <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 ${isConnected ? 'bg-green-100 text-green-600' : 'bg-blue-100 text-blue-600'}`}>
+              <User className="w-8 h-8" />
             </div>
             <h1 className="text-2xl font-bold text-slate-800">SK SRI AMAN</h1>
             <p className="text-slate-500 text-sm mt-2">Sistem Kemaskini Maklumat Staf</p>
+            {isConnected && (
+                <div className="mt-2 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-green-50 text-green-700 text-xs font-medium border border-green-200">
+                    <Database className="w-3 h-3" />
+                    <span>Bersambung ke Spreadsheet</span>
+                </div>
+            )}
           </div>
 
           <form onSubmit={handleLogin} className="space-y-6">
@@ -136,11 +224,69 @@ const App: React.FC = () => {
             >
               Log Masuk
             </button>
-            <p className="text-xs text-center text-slate-400 mt-4">
-              Sila masukkan No. K/P dengan atau tanpa sengkang.
-            </p>
           </form>
         </div>
+
+        {/* Config Modal */}
+        {isConfigOpen && (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
+                <div className="bg-white w-full max-w-lg rounded-xl shadow-2xl p-6">
+                    <div className="flex justify-between items-center mb-4">
+                        <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                            <Database className="w-5 h-5 text-blue-600" />
+                            Sambungan Spreadsheet
+                        </h3>
+                        <button onClick={() => setIsConfigOpen(false)} className="text-slate-400 hover:text-slate-600">
+                            <X className="w-5 h-5" />
+                        </button>
+                    </div>
+                    
+                    <p className="text-sm text-slate-600 mb-4">
+                        URL Web App telah dipratetapkan. Anda boleh menukarnya jika perlu.
+                    </p>
+
+                    <div className="space-y-4">
+                        <div>
+                            <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Google Apps Script Web App URL</label>
+                            <input 
+                                type="url" 
+                                value={sheetUrl}
+                                onChange={(e) => setSheetUrl(e.target.value)}
+                                placeholder="https://script.google.com/macros/s/..."
+                                className="w-full border border-slate-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                            />
+                        </div>
+                        
+                        {connectionError && (
+                            <div className="p-3 bg-red-50 text-red-700 text-sm rounded-lg flex items-start gap-2">
+                                <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                                <span>{connectionError}</span>
+                            </div>
+                        )}
+
+                        <div className="flex gap-3 pt-2">
+                            {isConnected && (
+                                <button 
+                                    type="button"
+                                    onClick={handleDisconnect}
+                                    className="flex-1 px-4 py-2 border border-red-200 text-red-600 rounded-lg text-sm font-medium hover:bg-red-50"
+                                >
+                                    Putuskan
+                                </button>
+                            )}
+                            <button 
+                                type="button"
+                                onClick={handleSaveConfig}
+                                disabled={isConnecting || !sheetUrl}
+                                className="flex-1 bg-blue-600 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed flex justify-center items-center gap-2"
+                            >
+                                {isConnecting ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Simpan & Sambung'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        )}
       </div>
     );
   }
@@ -158,7 +304,14 @@ const App: React.FC = () => {
               <h2 className="font-bold text-slate-800 text-sm sm:text-base truncate max-w-[150px] sm:max-w-md">
                 {currentUser.NAMA}
               </h2>
-              <p className="text-xs text-slate-500">{currentUser.JAWATAN} - {currentUser.GRED}</p>
+              <div className="flex items-center gap-2">
+                  <p className="text-xs text-slate-500">{currentUser.JAWATAN}</p>
+                  {isConnected ? (
+                      <span className="w-2 h-2 rounded-full bg-green-500" title="Online: Google Sheet"></span>
+                  ) : (
+                      <span className="w-2 h-2 rounded-full bg-slate-300" title="Offline: Local Mode"></span>
+                  )}
+              </div>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -188,11 +341,26 @@ const App: React.FC = () => {
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-2xl font-bold text-slate-800">Kemaskini Maklumat</h1>
           {saveStatus === 'saved' && (
-             <span className="flex items-center gap-1.5 text-green-600 text-sm font-medium bg-green-50 px-3 py-1 rounded-full border border-green-200">
-               <CheckCircle2 className="w-4 h-4" /> Disimpan!
+             <span className="flex items-center gap-1.5 text-green-600 text-sm font-medium bg-green-50 px-3 py-1 rounded-full border border-green-200 animate-in fade-in slide-in-from-bottom-2">
+               <CheckCircle2 className="w-4 h-4" /> Disimpan ke Spreadsheet!
+             </span>
+          )}
+           {saveStatus === 'error' && (
+             <span className="flex items-center gap-1.5 text-red-600 text-sm font-medium bg-red-50 px-3 py-1 rounded-full border border-red-200">
+               <AlertCircle className="w-4 h-4" /> Gagal Simpan
              </span>
           )}
         </div>
+
+        {!isConnected && (
+            <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg flex items-start gap-3 text-sm text-yellow-800">
+                <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+                <div>
+                    <p className="font-semibold">Mod Luar Talian</p>
+                    <p>Anda belum menyambungkan Google Sheet. Perubahan yang anda buat TIDAK akan disimpan jika anda reload laman ini. Sila 'Download CSV' selepas mengemaskini, atau sambungkan database di skrin Log Masuk.</p>
+                </div>
+            </div>
+        )}
 
         <div className="grid grid-cols-1 gap-8">
           {/* Section 1: Personal Info */}
@@ -404,7 +572,15 @@ const App: React.FC = () => {
             </span>
             <div className="flex gap-4 ml-auto sm:ml-0 w-full sm:w-auto">
                  <button
-                  onClick={() => setAllStaff(parseCSV(INITIAL_CSV_DATA))} // Basic Reset
+                  onClick={() => {
+                      if (isConnected) {
+                         // Revert to sheet data
+                         loadSheetData(sheetUrl);
+                      } else {
+                         // Revert to static CSV
+                         setAllStaff(parseCSV(INITIAL_CSV_DATA));
+                      }
+                  }}
                   className="flex-1 sm:flex-none px-6 py-2.5 text-slate-600 font-medium hover:bg-slate-100 rounded-lg transition-colors border border-slate-300"
                 >
                   Batal
@@ -414,7 +590,12 @@ const App: React.FC = () => {
                   disabled={!hasUnsavedChanges || saveStatus === 'saving'}
                   className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-8 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:text-slate-500 text-white font-semibold rounded-lg shadow-md transition-all active:scale-95"
                 >
-                  {saveStatus === 'saving' ? 'Menyimpan...' : (
+                  {saveStatus === 'saving' ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Menyimpan...
+                      </>
+                  ) : (
                     <>
                       <Save className="w-4 h-4" />
                       Simpan
