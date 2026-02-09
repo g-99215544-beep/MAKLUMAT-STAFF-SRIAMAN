@@ -170,19 +170,12 @@ const App: React.FC = () => {
   if (!currentUser) {
     return (
       <div className="min-h-screen bg-slate-100 flex flex-col items-center justify-center p-4 relative">
-        {/* Config Button (Login Screen) */}
-        <button 
-            onClick={() => setIsConfigOpen(true)}
-            className="absolute top-4 right-4 p-2 text-slate-500 hover:text-blue-600 hover:bg-slate-200 rounded-full transition-colors"
-            title="Tetapan Database"
-        >
-            <Database className="w-6 h-6" />
-        </button>
+        {/* Config Button hidden for security - staff data is confidential */}
 
         <div className="bg-white max-w-md w-full rounded-xl shadow-lg p-8 border border-slate-200 relative">
           <div className="text-center mb-8">
-            <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 ${isConnected ? 'bg-green-100 text-green-600' : 'bg-blue-100 text-blue-600'}`}>
-              <User className="w-8 h-8" />
+            <div className="w-20 h-20 rounded-full overflow-hidden mx-auto mb-4 border-2 border-slate-200 shadow-sm">
+              <img src="https://i.imgur.com/wpfWEN4.jpeg" alt="Logo SK Sri Aman" className="w-full h-full object-cover" />
             </div>
             <h1 className="text-2xl font-bold text-slate-800">SK SRI AMAN</h1>
             <p className="text-slate-500 text-sm mt-2">Sistem Kemaskini Maklumat Staf</p>
